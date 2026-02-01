@@ -16,6 +16,7 @@ from fastapi import UploadFile, File, Form
 import os
 from dotenv import load_dotenv
 from urllib.parse import urlparse
+from passlib.hash import bcrypt
 
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -37,8 +38,7 @@ class ProfileDB(Base):
     id = Column(String, primary_key=True, index=True)
     full_name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
-    course = Column(String)
-    year_of_study = Column(Integer)
+    password = Column(String)
     phone = Column(String)
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
@@ -94,9 +94,14 @@ class ProfileSchema(BaseModel):
     id: str
     fullName: str
     email: str
-    course: str
-    yearOfStudy: int
     phone: str
+    password: Optional[str] = None
+    model_config = ConfigDict(extra='ignore')
+
+
+class LoginSchema(BaseModel):
+    email: str
+    password: str
     model_config = ConfigDict(extra='ignore')
 
 
@@ -190,8 +195,6 @@ def get_products(db: Session = Depends(get_db)):
             "updatedAt": p.updated_at.isoformat() if p.updated_at else datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),
             "sellerName": p.seller.full_name if p.seller else "Unknown",
-            "sellerCourse": p.seller.course if p.seller else "N/A",
-            "sellerYear": p.seller.year_of_study if p.seller else 0,
             "sellerPhone": p.seller.phone if p.seller else "",
         })
     
@@ -323,11 +326,10 @@ def get_profile_by_email(email: str, db: Session = Depends(get_db)):
         "id": p.id,
         "email": p.email,
         "fullName": p.full_name,
-        "course": p.course,
-        "yearOfStudy": p.year_of_study,
         "phone": p.phone,
-        "createdAt": p.created_at.isoformat()
+        "createdAt": p.created_at.isoformat(),
     }
+    
 
 
 @app.post("/profiles")
@@ -335,17 +337,16 @@ def upsert_profile(profile: ProfileSchema, db: Session = Depends(get_db)):
     existing = db.query(ProfileDB).filter(ProfileDB.id == profile.id).first()
     if existing:
         existing.full_name = profile.fullName
-        existing.course = profile.course
-        existing.year_of_study = profile.yearOfStudy
         existing.phone = profile.phone
+        if profile.password:
+            existing.password = bcrypt.hash(profile.password)
     else:
         db_profile = ProfileDB(
             id=profile.id,
             full_name=profile.fullName,
             email=profile.email.lower(),
-            course=profile.course,
-            year_of_study=profile.yearOfStudy,
-            phone=profile.phone
+            phone=profile.phone,
+            password=bcrypt.hash(profile.password) if profile.password else None
         )
         db.add(db_profile)
 
@@ -356,3 +357,26 @@ def upsert_profile(profile: ProfileSchema, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"status": "ok"}
+
+
+@app.post("/login")
+def login(data: LoginSchema, db: Session = Depends(get_db)):
+    email = data.email.lower().strip()
+    p = db.query(ProfileDB).filter(ProfileDB.email.ilike(email)).first()
+    if not p:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not p.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    try:
+        if not bcrypt.verify(data.password, p.password):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    return {
+        "id": p.id,
+        "email": p.email,
+        "fullName": p.full_name,
+        "phone": p.phone,
+        "createdAt": p.created_at.isoformat()
+    }

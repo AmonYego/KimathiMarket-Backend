@@ -6,3 +6,4 @@ python-dotenv
 supabase
 python-multipart
 psycopg2
+passlib
